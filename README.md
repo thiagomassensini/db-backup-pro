@@ -1,20 +1,29 @@
 # db-backup-pro
 
-Backup otimizado para **MySQL/MariaDB** e **PostgreSQL**, com compressão inteligente, retenção, logs e estrutura organizada por host/data/tipo.
+Backup otimizado para **MySQL/MariaDB** e **PostgreSQL**, com compressão inteligente, retenção, logs, e envio de relatório por e-mail (texto ou HTML via `msmtp`).
 
 Autor: **Thiago Motta Massensini**  
+
 Contato: **suporte@hextec.com.br**  
+
 Licença: **MIT**
 
-## Recursos
-- MySQL/MariaDB via `mysqldump` (consistente com `--single-transaction --quick`, inclui rotinas/eventos/gatilhos).
-- PostgreSQL via `pg_dump` por banco e `pg_dumpall --globals-only` para roles/globais.
-- Compressão automática: tenta `zstd` > `pigz` > `gzip` (ou escolha manual).
-- Retenção por dias com limpeza automática.
-- Log detalhado e symlink `latest` para última execução.
-- `.env` opcional para configurar credenciais/variáveis.
+---
 
-## Estrutura de saída
+## ✨ Recursos
+
+- **MySQL/MariaDB** via `mysqldump` (consistente com `--single-transaction --quick`, inclui rotinas, eventos e gatilhos).
+- **PostgreSQL** via `pg_dump` por banco e `pg_dumpall --globals-only` para roles/globais.
+- **Compressão automática**: tenta `zstd` > `pigz` > `gzip` (ou escolha manual com `COMP`).
+- **Retenção por dias** com limpeza automática dos diretórios antigos.
+- **Logs detalhados** e symlink `latest` para a última execução.
+- **Envio de log por e-mail** (texto ou **HTML**) via `msmtp`.
+- Configuração por **variáveis de ambiente** ou arquivo `.env` (ex.: `/etc/db_backup.env`).
+
+---
+
+## 🗂️ Estrutura de saída
+
 ```
 /backup/db/<hostname>/<db_type>/<YYYY-MM-DD-HHMMSS>/
   ├─ globals_roles.sql(.zst|.gz)?     # (apenas PostgreSQL)
@@ -25,21 +34,34 @@ Licença: **MIT**
 /var/log/db-backup/backup_<db_type>_<host>_<timestamp>.log
 ```
 
-## Requisitos
+---
+
+## 📦 Requisitos
+
 - Comuns: `bash`, `find`, `numfmt` (coreutils), compressor (`zstd`/`pigz`/`gzip`).
 - MySQL/MariaDB: `mysql`, `mysqldump`.
 - PostgreSQL: `psql`, `pg_dump`, `pg_dumpall`.
-- (Opcional) `msmtp` para envio de log por email.
+- (Opcional) `msmtp` para envio de log por e-mail.
 
-## Instalação
+---
+
+## 🚀 Instalação
+
 ```bash
+# copie o script para um local do PATH
 sudo install -m 0755 db_backup_pro.sh /usr/local/bin/db_backup_pro.sh
+
+# crie diretórios padrão
 sudo mkdir -p /backup/db /var/log/db-backup
 sudo chown -R root:root /backup/db /var/log/db-backup
 ```
 
-## Configuração via `.env` (opcional)
-Crie `/etc/db_backup.env` (ou defina `ENV_FILE`):
+---
+
+## ⚙️ Configuração via `.env` (opcional)
+
+Crie `/etc/db_backup.env` (ou defina `ENV_FILE` apontando para outro local):
+
 ```bash
 # Tipo de banco: mysql | postgres
 DB_TYPE=mysql
@@ -67,26 +89,127 @@ PGDATABASE=postgres
 
 # Envio de log (opcional)
 SEND_LOG=true
+SEND_LOG_FORMAT=html        # text | html
 EMAIL=suporte@hextec.com.br
 FROM=backup@$(hostname -f 2>/dev/null || hostname).local
 ```
 
-## Uso
+> **Dica:** Não faça commit de arquivos `.env` contendo credenciais.
+
+---
+
+## 🧪 Uso
+
 ### MySQL/MariaDB
 ```bash
-DB_TYPE=mysql /usr/local/bin/db_backup_pro.sh              # todos os bancos (exceto system)
-DB_TYPE=mysql /usr/local/bin/db_backup_pro.sh meu_banco    # um banco específico
+# todos os bancos (exceto system)
+DB_TYPE=mysql /usr/local/bin/db_backup_pro.sh
+
+# um banco específico
+DB_TYPE=mysql /usr/local/bin/db_backup_pro.sh nome_do_banco
 ```
 
 ### PostgreSQL
 ```bash
-DB_TYPE=postgres /usr/local/bin/db_backup_pro.sh           # todos os bancos (exceto templates)
-DB_TYPE=postgres /usr/local/bin/db_backup_pro.sh meu_db    # um banco específico
+# todos os bancos (exceto templates)
+DB_TYPE=postgres /usr/local/bin/db_backup_pro.sh
+
+# um banco específico
+DB_TYPE=postgres /usr/local/bin/db_backup_pro.sh nome_do_db
 ```
 
-> Dica: você pode exportar `DB_TYPE` e demais variáveis no ambiente ou usar o `.env`.
+---
 
-## Crontab (exemplos)
+## ✉️ Envio de log por e-mail (texto/HTML) com `msmtp`
+
+O script envia o log completo ao final da execução quando `SEND_LOG=true`. Defina `SEND_LOG_FORMAT=html` para receber um e-mail com `Content-Type: text/html` contendo o log em `<pre>`.
+
+### Instalação do `msmtp` (Ubuntu/Debian)
+```bash
+sudo apt update
+sudo apt install -y msmtp msmtp-mta
+```
+
+### Configuração do SMTP (`/etc/msmtprc`)
+
+Crie o arquivo `/etc/msmtprc` e aplique permissões seguras:
+
+```bash
+sudo nano /etc/msmtprc
+sudo chown root:root /etc/msmtprc
+sudo chmod 600 /etc/msmtprc
+```
+
+**Exemplo 1 — SMTP genérico (provedor próprio):**
+```ini
+# /etc/msmtprc
+defaults
+auth           on
+tls            on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /var/log/msmtp.log
+
+account        default
+host           mail.seudominio.com
+port           587
+from           suporte@hextec.com.br
+user           suporte@hextec.com.br
+password       SUA_SENHA_AQUI
+```
+
+**Exemplo 2 — Gmail (App Password):**
+```ini
+defaults
+auth           on
+tls            on
+tls_starttls   on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /var/log/msmtp.log
+
+account        default
+host           smtp.gmail.com
+port           587
+from           suporte@hextec.com.br
+user           suporte@hextec.com.br
+password       APP_PASSWORD_DO_GMAIL
+```
+
+**Exemplo 3 — Office 365/Outlook:**
+```ini
+defaults
+auth           on
+tls            on
+tls_starttls   on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /var/log/msmtp.log
+
+account        default
+host           smtp.office365.com
+port           587
+from           suporte@hextec.com.br
+user           suporte@hextec.com.br
+password       SUA_SENHA_AQUI
+```
+
+> **Obs.:** Para provedores que exigem OAuth2, prefira **App Password** para uso em servidores/headless.
+
+### Teste rápido do e-mail
+```bash
+echo "teste ok" | msmtp -a default suporte@hextec.com.br
+```
+
+Se chegar, o `msmtp` está pronto. Em seguida, defina no `.env`:
+```bash
+SEND_LOG=true
+SEND_LOG_FORMAT=html   # ou text
+EMAIL=suporte@hextec.com.br
+FROM=backup@$(hostname -f 2>/dev/null || hostname).local
+```
+
+---
+
+## ⏲️ Crontab (exemplos)
+
 ```bash
 # MySQL todos os dias às 02:15
 15 2 * * * DB_TYPE=mysql /usr/local/bin/db_backup_pro.sh >> /var/log/cron-db-backup.log 2>&1
@@ -95,7 +218,10 @@ DB_TYPE=postgres /usr/local/bin/db_backup_pro.sh meu_db    # um banco específic
 45 2 * * * DB_TYPE=postgres /usr/local/bin/db_backup_pro.sh >> /var/log/cron-db-backup.log 2>&1
 ```
 
-## Restauração (resumo)
+---
+
+## ♻️ Restauração (resumo)
+
 ### MySQL/MariaDB
 ```bash
 # arquivo .sql (ou .sql.gz/.zst com zcat / zstdcat)
@@ -112,7 +238,29 @@ createdb -h HOST -p PORT -U USER meu_db || true
 psql -h HOST -p PORT -U USER -d meu_db -f meu_db.sql
 ```
 
-## Observações
-- Este projeto e os scripts são de **autoria de Thiago Motta Massensini**.
-- Sem referências a empresas anteriores; use o email **suporte@hextec.com.br** para contato.
-- Teste em ambiente de staging antes de usar em produção.
+---
+
+## 🧰 Troubleshooting rápido
+
+- **Erro de autenticação no e-mail:** verifique `/etc/msmtprc` e permissões (600), teste com `echo "ok" | msmtp ...`.
+- **Aviso `--column-statistics` no MySQL:** o script desliga automaticamente com `--column-statistics=0` quando necessário.
+- **GTID/replicação:** o script define `--set-gtid-purged=OFF` para evitar conflitos em versões antigas.
+- **`numfmt: command not found`**: instale `coreutils`.
+
+---
+
+## 🗒️ Changelog
+
+### v1.1
+- Suporte a envio de e-mail **HTML** via `msmtp` (`SEND_LOG_FORMAT=html`).
+- Documentação de **SMTP** detalhada no README.
+- Pequenas melhorias de log e robustez.
+
+### v1.0
+- Primeira versão pública (MySQL/MariaDB + PostgreSQL, compressão automática, retenção, logs, symlink `latest`).
+
+---
+
+## 📜 Licença
+
+Este projeto é distribuído sob a licença **MIT**. Consulte o arquivo `LICENSE`.
