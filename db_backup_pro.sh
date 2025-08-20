@@ -1,52 +1,19 @@
 #!/usr/bin/env bash
-# db_backup_pro.sh — Backup otimizado de MySQL/MariaDB e PostgreSQL
-# Autor: Thiago Motta Massensini
-# Contato: suporte@hextec.com.br
-# Licença: MIT
+# db_backup_pro.sh — Backup otimizado de MySQL/MariaDB e PostgreSQL (com email HTML opcional)
+# Autor: Thiago Motta Massensini | suporte@hextec.com.br | Licença: MIT
 #
-# Recursos principais
-# - MySQL/MariaDB: mysqldump por banco, consistente (--single-transaction --quick), inclui rotinas/eventos/gatilhos
-# - PostgreSQL: pg_dump por banco (exclui templates), dump de roles/globais separado (pg_dumpall --globals-only)
-# - Compressão automática (zstd > pigz > gzip) ou seleção manual
-# - Retenção por dias com limpeza automática
-# - Log detalhado e link simbólico "latest" para a última execução
-# - Arquivo .env opcional para configurar variáveis de ambiente
-#
-# Uso rápido
-#   DB_TYPE=mysql ./db_backup_pro.sh              # MySQL/MariaDB: todos os bancos (exceto system)
-#   DB_TYPE=mysql ./db_backup_pro.sh meu_banco    # MySQL/MariaDB: um banco específico
-#   DB_TYPE=postgres ./db_backup_pro.sh           # PostgreSQL: todos os bancos (exceto templates)
-#   DB_TYPE=postgres ./db_backup_pro.sh meu_db    # PostgreSQL: um banco específico
-#
-# Variáveis principais (podem ser definidas via ambiente ou .env)
-#   DB_TYPE=mysql|postgres          (obrigatório)
-#   BACKUP_DIR=/backup/db
-#   LOG_DIR=/var/log/db-backup
-#   RETENTION_DAYS=10
-#   COMP=auto|zstd|pigz|gzip
-#   ENV_FILE=/etc/db_backup.env
-#
-#   Para MySQL/MariaDB:
-#     MYSQL_HOST=127.0.0.1    MYSQL_PORT=3306
-#     MYSQL_USER=root         MYSQL_PASSWORD=
-#
-#   Para PostgreSQL:
-#     PGHOST=127.0.0.1        PGPORT=5432
-#     PGUSER=postgres         PGPASSWORD=
-#     # (opcional: PGDATABASE para testar conexão)
+# Diferença desta versão:
+# - Envio de log por e-mail com suporte a HTML: defina SEND_LOG=true e SEND_LOG_FORMAT=html
+# - Cabeçalhos MIME corretos para HTML usando msmtp
 #
 set -Eeuo pipefail
 
-# ------------- Config padrão -------------
 DB_TYPE="${DB_TYPE:-}"
 if [[ -z "${DB_TYPE}" ]]; then
   echo "[!] DB_TYPE não definido. Use DB_TYPE=mysql ou DB_TYPE=postgres"
   exit 1
 fi
-case "${DB_TYPE}" in
-  mysql|postgres) ;;
-  *) echo "[!] DB_TYPE inválido: ${DB_TYPE}. Use mysql ou postgres"; exit 1;;
-esac
+case "${DB_TYPE}" in mysql|postgres) ;; *) echo "[!] DB_TYPE inválido: ${DB_TYPE}"; exit 1;; esac
 
 BACKUP_DIR="${BACKUP_DIR:-/backup/db}"
 LOG_DIR="${LOG_DIR:-/var/log/db-backup}"
@@ -54,31 +21,24 @@ RETENTION_DAYS="${RETENTION_DAYS:-10}"
 COMP="${COMP:-auto}"
 ENV_FILE="${ENV_FILE:-/etc/db_backup.env}"
 
-# MySQL defaults
 MYSQL_HOST="${MYSQL_HOST:-127.0.0.1}"
 MYSQL_PORT="${MYSQL_PORT:-3306}"
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 
-# PostgreSQL defaults (psql/pg_dump usam variáveis padrão do client)
 PGHOST="${PGHOST:-127.0.0.1}"
 PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-postgres}"
 PGPASSWORD="${PGPASSWORD:-${PGPASSWORD:-}}"
 PGDATABASE="${PGDATABASE:-postgres}"
 
-# Log/email (opcional)
 SEND_LOG="${SEND_LOG:-false}"
+SEND_LOG_FORMAT="${SEND_LOG_FORMAT:-text}"   # text|html
 EMAIL="${EMAIL:-}"
 FROM="${FROM:-}"
 
-# ------------- .env opcional -------------
-if [[ -f "$ENV_FILE" ]]; then
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-fi
+if [[ -f "$ENV_FILE" ]]; then source "$ENV_FILE"; fi
 
-# ------------- Preparação -------------
 DATE="$(date +%F-%H%M%S)"
 HOST="$(hostname)"
 RUN_BASE="${BACKUP_DIR%/}/${HOST}/${DB_TYPE}"
@@ -115,14 +75,9 @@ choose_comp() {
   fi
 }
 
-fmt_bytes() {
-  numfmt --to=iec --suffix=B --padding=7 "${1:-0}" 2>/dev/null || echo "${1:-0}B"
-}
+fmt_bytes() { numfmt --to=iec --suffix=B --padding=7 "${1:-0}" 2>/dev/null || echo "${1:-0}B"; }
 
-# ------------- MySQL helpers -------------
-has_flag_mysql() {
-  mysqldump --help 2>&1 | grep -q "$1"
-}
+has_flag_mysql() { mysqldump --help 2>&1 | grep -q "$1"; }
 mysql_exec() {
   mysql --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
         ${MYSQL_PASSWORD:+--password="$MYSQL_PASSWORD"} "$@"
@@ -131,188 +86,76 @@ mysqldump_exec() {
   mysqldump --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
             ${MYSQL_PASSWORD:+--password="$MYSQL_PASSWORD"} "$@"
 }
+psql_exec()    { PGPASSWORD="$PGPASSWORD" psql     --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" --dbname="$PGDATABASE" "$@"; }
+pg_dump_exec() { PGPASSWORD="$PGPASSWORD" pg_dump  --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" "$@"; }
+pg_dumpall_exec(){ PGPASSWORD="$PGPASSWORD" pg_dumpall --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" "$@"; }
 
-# ------------- PostgreSQL helpers -------------
-psql_exec() {
-  PGPASSWORD="$PGPASSWORD" psql --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" --dbname="$PGDATABASE" "$@"
-}
-pg_dump_exec() {
-  PGPASSWORD="$PGPASSWORD" pg_dump --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" "$@"
-}
-pg_dumpall_exec() {
-  PGPASSWORD="$PGPASSWORD" pg_dumpall --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" "$@"
-}
-
-# ------------- Validação de dependências -------------
 COMP_TOOL="$(choose_comp)"
 echo "[=] Compressor: $COMP_TOOL"
 
 if [[ "$DB_TYPE" == "mysql" ]]; then
-  for b in mysql mysqldump find; do
-    have "$b" || { echo "[!] Dependência ausente: $b"; exit 2; }
-  done
+  for b in mysql mysqldump find; do have "$b" || { echo "[!] Falta: $b"; exit 2; }; done
   echo "[=] Testando conexão MySQL ${MYSQL_HOST}:${MYSQL_PORT}..."
-  mysql_exec -e "SELECT VERSION();" >/dev/null
-  echo "[+] Conectado ao MySQL"
-elif [[ "$DB_TYPE" == "postgres" ]]; then
-  for b in psql pg_dump pg_dumpall find; do
-    have "$b" || { echo "[!] Dependência ausente: $b"; exit 2; }
-  done
+  mysql_exec -e "SELECT VERSION();" >/dev/null; echo "[+] Conectado MySQL"
+else
+  for b in psql pg_dump pg_dumpall find; do have "$b" || { echo "[!] Falta: $b"; exit 2; }; done
   echo "[=] Testando conexão PostgreSQL ${PGHOST}:${PGPORT}..."
-  psql_exec -c "SELECT version();" >/dev/null
-  echo "[+] Conectado ao PostgreSQL"
+  psql_exec -c "SELECT version();" >/dev/null; echo "[+] Conectado PostgreSQL"
 fi
 
-# ------------- Listagem de bancos -------------
 declare -a target_dbs=()
-
 if [[ "$DB_TYPE" == "mysql" ]]; then
   declare -a SKIP_MYSQL=("information_schema" "performance_schema" "mysql" "sys")
-  should_skip_mysql() { local db="$1"; for s in "${SKIP_MYSQL[@]}"; do [[ "$db" == "$s" ]] && return 0; done; return 1; }
-
-  if [[ $# -ge 1 ]]; then
-    target_dbs=("$1")
-  else
-    while IFS= read -r db; do
-      [[ -z "$db" ]] && continue
-      should_skip_mysql "$db" || target_dbs+=("$db")
-    done < <(mysql_exec -N -e "SHOW DATABASES;")
+  should_skip_mysql(){ local db="$1"; for s in "${SKIP_MYSQL[@]}"; do [[ "$db" == "$s" ]] && return 0; done; return 1; }
+  if [[ $# -ge 1 ]]; then target_dbs=("$1"); else
+    while IFS= read -r db; do [[ -z "$db" ]] && continue; should_skip_mysql "$db" || target_dbs+=("$db"); done < <(mysql_exec -N -e "SHOW DATABASES;")
   fi
-
-elif [[ "$DB_TYPE" == "postgres" ]]; then
-  # exclui templates, postgres pode permanecer (se desejar remover, adicione ao filtro)
-  if [[ $# -ge 1 ]]; then
-    target_dbs=("$1")
-  else
-    while IFS= read -r db; do
-      [[ -z "$db" ]] && continue
-      case "$db" in
-        template0|template1) continue ;;
-        *) target_dbs+=("$db") ;;
-      esac
-    done < <(psql_exec -t -A -c "SELECT datname FROM pg_database WHERE datistemplate = false;")
+else
+  if [[ $# -ge 1 ]]; then target_dbs=("$1"); else
+    while IFS= read -r db; do [[ -z "$db" ]] && continue; [[ "$db" =~ ^template[01]$ ]] && continue; target_dbs+=("$db"); done < <(psql_exec -t -A -c "SELECT datname FROM pg_database WHERE datistemplate = false;")
   fi
 fi
-
-if [[ ${#target_dbs[@]} -eq 0 ]]; then
-  echo "[!] Nenhum banco de dados alvo encontrado."; exit 3
-fi
+[[ ${#target_dbs[@]} -gt 0 ]] || { echo "[!] Nenhum banco encontrado"; exit 3; }
 echo "[=] Bancos-alvo: ${target_dbs[*]}"
 
-# ------------- Flags e função de dump -------------
 backup_mysql_db() {
-  local db="$1"
-  local out="${RUN_DIR}/${db}.sql"
-
-  local DUMP_FLAGS=(
-    --single-transaction
-    --quick
-    --routines
-    --events
-    --triggers
-    --hex-blob
-    --default-character-set=utf8mb4
-    --skip-lock-tables
-  )
-  if has_flag_mysql "column-statistics"; then DUMP_FLAGS+=(--column-statistics=0); fi
-  if has_flag_mysql "set-gtid-purged"; then DUMP_FLAGS+=(--set-gtid-purged=OFF); fi
-  if has_flag_mysql "no-tablespaces"; then DUMP_FLAGS+=(--no-tablespaces); fi
-
+  local db="$1"; local out="${RUN_DIR}/${db}.sql"
+  local DUMP_FLAGS=( --single-transaction --quick --routines --events --triggers --hex-blob --default-character-set=utf8mb4 --skip-lock-tables )
+  has_flag_mysql "column-statistics" && DUMP_FLAGS+=(--column-statistics=0)
+  has_flag_mysql "set-gtid-purged"   && DUMP_FLAGS+=(--set-gtid-purged=OFF)
+  has_flag_mysql "no-tablespaces"    && DUMP_FLAGS+=(--no-tablespaces)
   echo "[>] MySQL dump: ${db}"
-  if [[ "$COMP_TOOL" == "zstd" ]]; then
-    out="${out}.zst"
-    mysqldump_exec "${DUMP_FLAGS[@]}" --databases "$db" | zstd -T0 -19 -o "$out"
-  elif [[ "$COMP_TOOL" == "pigz" ]]; then
-    out="${out}.gz"
-    mysqldump_exec "${DUMP_FLAGS[@]}" --databases "$db" | pigz -9 > "$out"
-  elif [[ "$COMP_TOOL" == "gzip" ]]; then
-    out="${out}.gz"
-    mysqldump_exec "${DUMP_FLAGS[@]}" --databases "$db" | gzip -9 > "$out"
-  else
-    mysqldump_exec "${DUMP_FLAGS[@]}" --databases "$db" > "$out"
-  fi
-
-  if [[ -f "$out" ]]; then
-    local sz=$(stat -c%s "$out" 2>/dev/null || stat -f%z "$out")
-    echo "[+] OK ${db} -> $(fmt_bytes "$sz") -> ${out}"
-  else
-    echo "[!] Falhou ${db} (arquivo não gerado)"
-    return 1
-  fi
+  if [[ "$COMP_TOOL" == "zstd" ]]; then out="${out}.zst"; mysqldump_exec "${DUMP_FLAGS[@]}" --databases "$db" | zstd -T0 -19 -o "$out"
+  elif [[ "$COMP_TOOL" == "pigz" ]]; then out="${out}.gz"; mysqldump_exec "${DUMP_FLAGS[@]}" --databases "$db" | pigz -9 > "$out"
+  elif [[ "$COMP_TOOL" == "gzip" ]]; then out="${out}.gz"; mysqldump_exec "${DUMP_FLAGS[@]}" --databases "$db" | gzip -9 > "$out"
+  else mysqldump_exec "${DUMP_FLAGS[@]}" --databases "$db" > "$out"; fi
+  [[ -f "$out" ]] && echo "[+] OK ${db} -> $(fmt_bytes "$(stat -c%s "$out" 2>/dev/null || stat -f%z "$out")") -> ${out}" || { echo "[!] Falhou ${db}"; return 1; }
 }
-
 backup_postgres_db() {
-  local db="$1"
-  local out="${RUN_DIR}/${db}.sql"
-
-  # flags padrão (plain SQL, inclui owner/privs)
-  local DUMP_FLAGS=(
-    --format=plain
-    --no-owner
-    --no-privileges
-    --encoding=UTF8
-    --dbname="$db"
-  )
-
+  local db="$1"; local out="${RUN_DIR}/${db}.sql"
+  local DUMP_FLAGS=( --format=plain --no-owner --no-privileges --encoding=UTF8 --dbname="$db" )
   echo "[>] PostgreSQL dump: ${db}"
-  if [[ "$COMP_TOOL" == "zstd" ]]; then
-    out="${out}.zst"
-    pg_dump_exec "${DUMP_FLAGS[@]}" | zstd -T0 -19 -o "$out"
-  elif [[ "$COMP_TOOL" == "pigz" ]]; then
-    out="${out}.gz"
-    pg_dump_exec "${DUMP_FLAGS[@]}" | pigz -9 > "$out"
-  elif [[ "$COMP_TOOL" == "gzip" ]]; then
-    out="${out}.gz"
-    pg_dump_exec "${DUMP_FLAGS[@]}" | gzip -9 > "$out"
-  else
-    pg_dump_exec "${DUMP_FLAGS[@]}" > "$out"
-  fi
-
-  if [[ -f "$out" ]]; then
-    local sz=$(stat -c%s "$out" 2>/dev/null || stat -f%z "$out")
-    echo "[+] OK ${db} -> $(fmt_bytes "$sz") -> ${out}"
-  else
-    echo "[!] Falhou ${db} (arquivo não gerado)"
-    return 1
-  fi
+  if [[ "$COMP_TOOL" == "zstd" ]]; then out="${out}.zst"; pg_dump_exec "${DUMP_FLAGS[@]}" | zstd -T0 -19 -o "$out"
+  elif [[ "$COMP_TOOL" == "pigz" ]]; then out="${out}.gz"; pg_dump_exec "${DUMP_FLAGS[@]}" | pigz -9 > "$out"
+  elif [[ "$COMP_TOOL" == "gzip" ]]; then out="${out}.gz"; pg_dump_exec "${DUMP_FLAGS[@]}" | gzip -9 > "$out"
+  else pg_dump_exec "${DUMP_FLAGS[@]}" > "$out"; fi
+  [[ -f "$out" ]] && echo "[+] OK ${db} -> $(fmt_bytes "$(stat -c%s "$out" 2>/dev/null || stat -f%z "$out")") -> ${out}" || { echo "[!] Falhou ${db}"; return 1; }
 }
 
-# ------------- Execução dos dumps -------------
 fail=0
 if [[ "$DB_TYPE" == "mysql" ]]; then
-  for db in "${target_dbs[@]}"; do
-    backup_mysql_db "$db" || fail=$((fail+1))
-  done
-elif [[ "$DB_TYPE" == "postgres" ]]; then
-  # Dump de roles/globais uma vez
+  for db in "${target_dbs[@]}"; do backup_mysql_db "$db" || fail=$((fail+1)); done
+else
   local globals="${RUN_DIR}/globals_roles.sql"
   echo "[=] Dump de roles/globais (pg_dumpall --globals-only)"
-  if [[ "$COMP_TOOL" == "zstd" ]]; then
-    globals="${globals}.zst"
-    pg_dumpall_exec --globals-only | zstd -T0 -19 -o "$globals"
-  elif [[ "$COMP_TOOL" == "pigz" ]]; then
-    globals="${globals}.gz"
-    pg_dumpall_exec --globals-only | pigz -9 > "$globals"
-  elif [[ "$COMP_TOOL" == "gzip" ]]; then
-    globals="${globals}.gz"
-    pg_dumpall_exec --globals-only | gzip -9 > "$globals"
-  else
-    pg_dumpall_exec --globals-only > "$globals"
-  fi
-  if [[ -f "$globals" ]]; then
-    local sz=$(stat -c%s "$globals" 2>/dev/null || stat -f%z "$globals")
-    echo "[+] OK globals -> $(fmt_bytes "$sz") -> ${globals}"
-  else
-    echo "[!] Falha no dump de roles/globais"
-    fail=$((fail+1))
-  fi
-
-  for db in "${target_dbs[@]}"; do
-    backup_postgres_db "$db" || fail=$((fail+1))
-  done
+  if [[ "$COMP_TOOL" == "zstd" ]]; then globals="${globals}.zst"; pg_dumpall_exec --globals-only | zstd -T0 -19 -o "$globals"
+  elif [[ "$COMP_TOOL" == "pigz" ]]; then globals="${globals}.gz"; pg_dumpall_exec --globals-only | pigz -9 > "$globals"
+  elif [[ "$COMP_TOOL" == "gzip" ]]; then globals="${globals}.gz"; pg_dumpall_exec --globals-only | gzip -9 > "$globals"
+  else pg_dumpall_exec --globals-only > "$globals"; fi
+  [[ -f "$globals" ]] && echo "[+] OK globals -> $(fmt_bytes "$(stat -c%s "$globals" 2>/dev/null || stat -f%z "$globals")") -> ${globals}" || { echo "[!] Falha em globals"; fail=$((fail+1)); }
+  for db in "${target_dbs[@]}"; do backup_postgres_db "$db" || fail=$((fail+1)); done
 fi
 
-# ------------- Retenção e 'latest' -------------
 if [[ "$RETENTION_DAYS" =~ ^[0-9]+$ && "$RETENTION_DAYS" -gt 0 ]]; then
   echo "[=] Limpando backups com mais de ${RETENTION_DAYS} dias em ${RUN_BASE}"
   find "${RUN_BASE}" -mindepth 1 -maxdepth 1 -type d -mtime +${RETENTION_DAYS} -print -exec rm -rf {} +
@@ -320,22 +163,53 @@ fi
 
 ln -sfn "$RUN_DIR" "${RUN_BASE}/latest"
 
-# ------------- Resumo e envio de log (opcional) -------------
 END_TS=$(date +%s); DUR=$((END_TS - START_TS))
 printf "\n[=] Concluído: %s | Duração total: %02d:%02d:%02d | Falhas: %d\n" \
   "$(date '+%F %T')" $((DUR/3600)) $(((DUR%3600)/60)) $((DUR%60)) "$fail"
 
-if [[ "${SEND_LOG,,}" == "true" && -n "$EMAIL" && -n "$FROM" && $(command -v msmtp) ]]; then
+# -------- Email HTML opcional --------
+send_mail_html() {
+  local subject="$1"
+  local html_body="$2"
+  local tmp="/tmp/db_backup_mail_${DB_TYPE}_${DATE}.eml"
   {
-    echo "From: $FROM"
-    echo "To: $EMAIL"
-    echo "Subject: DB Backup (${DB_TYPE}) - ${HOST} - ${DATE} (falhas=${fail})"
-    echo ""
-    cat "$LOG_FILE"
-  } > /tmp/email_backup_log.txt
-  if msmtp "$EMAIL" < /tmp/email_backup_log.txt; then
-    echo "[+] Log enviado para $EMAIL"
+    echo "From: ${FROM}"
+    echo "To: ${EMAIL}"
+    echo "Subject: ${subject}"
+    echo "MIME-Version: 1.0"
+    echo "Content-Type: text/html; charset=UTF-8"
+    echo
+    echo "${html_body}"
+  } > "$tmp"
+  msmtp "$EMAIL" < "$tmp"
+}
+
+if [[ "${SEND_LOG,,}" == "true" && -n "$EMAIL" && -n "$FROM" && $(command -v msmtp) ]]; then
+  if [[ "${SEND_LOG_FORMAT,,}" == "html" ]]; then
+    # Monta HTML simples com resumo e log em <pre>
+    HTML="<html><body style='font-family:Arial,sans-serif'>
+<h2>Backup ${DB_TYPE} — ${HOST}</h2>
+<p><b>Data:</b> ${DATE}<br><b>Falhas:</b> ${fail}</p>
+<h3>Resumo</h3>
+<pre style='background:#111;color:#eee;padding:10px;border-radius:6px;white-space:pre-wrap;'>$(sed 's/&/\&amp;/g; s/</\&lt;/g' "$LOG_FILE")</pre>
+</body></html>"
+    if send_mail_html "DB Backup (${DB_TYPE}) - ${HOST} - ${DATE} (falhas=${fail})" "$HTML"; then
+      echo "[+] Log HTML enviado para $EMAIL"
+    else
+      echo "[!] Falha ao enviar e-mail HTML"
+    fi
   else
-    echo "[!] Falha ao enviar log"
+    {
+      echo "From: $FROM"
+      echo "To: $EMAIL"
+      echo "Subject: DB Backup (${DB_TYPE}) - ${HOST} - ${DATE} (falhas=${fail})"
+      echo ""
+      cat "$LOG_FILE"
+    } > /tmp/email_backup_log.txt
+    if msmtp "$EMAIL" < /tmp/email_backup_log.txt; then
+      echo "[+] Log texto enviado para $EMAIL"
+    else
+      echo "[!] Falha ao enviar e-mail texto"
+    fi
   fi
 fi
