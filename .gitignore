@@ -1,0 +1,23 @@
+# Logs
+*.log
+*.out
+*.err
+
+# Backups gerados
+*.sql
+*.sql.gz
+*.sql.zst
+*.sql.xz
+
+# Arquivos temporários
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Diretórios de backup (caso teste local)
+backup/
+backups/
+__pycache__/
+
